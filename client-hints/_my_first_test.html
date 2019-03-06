@@ -1,0 +1,12 @@
+<html>
+<body>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+
+<div style="width: 300px;"></div>
+
+<script>
+	test( function() { 
+		assert_equals( document.querySelector('div').clientWidth, 300 );
+	}, "Setting width" );
+</script>
