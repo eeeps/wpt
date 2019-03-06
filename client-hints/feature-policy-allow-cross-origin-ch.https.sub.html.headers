@@ -1,0 +1,2 @@
+Feature-Policy: ch-dpr 'self' {{hosts[][www1]}}
+Accept-CH: dpr

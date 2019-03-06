@@ -1,0 +1,21 @@
+<html>
+<body>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+
+<script>
+
+promise_test(t => {
+  
+  return fetch("https://{{hosts[][www]}}:{{ports[https][0]}}/client-hints/echo_client_hints_received.py").then(r => {
+      assert_equals(r.status, 200);
+      assert_false(r.headers.has("dpr-received"));
+    })
+  },
+  "Without a Feature Policy, cross-origin Client Hints are disabled by default; hint was not sent." 
+);
+
+</script>
+
+</body>
+</html>
