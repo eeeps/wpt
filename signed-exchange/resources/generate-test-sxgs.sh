@@ -28,6 +28,15 @@ tmpdir=$(mktemp -d)
 echo -n OCSP >$tmpdir/ocsp
 gen-certurl -pem $certfile -ocsp $tmpdir/ocsp > $certfile.cbor
 
+option="-w 0"
+if [ "$(uname -s)" = "Darwin" ]; then
+    option=""
+fi
+
+cert_base64=$(base64 ${option} ${certfile}.cbor)
+data_cert_url="data:application/cert-chain+cbor;base64,$cert_base64"
+
+
 # A valid Signed Exchange.
 gen-signedexchange \
   -version $sxg_version \
@@ -41,6 +50,37 @@ gen-signedexchange \
   -date 2018-04-01T00:00:00Z \
   -expire 168h \
   -o sxg/sxg-location.sxg \
+  -miRecordSize 100
+
+# A valid Signed Exchange for appcache test.
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $inner_url_origin/signed-exchange/appcache/resources/inner-url.html \
+  -status 200 \
+  -content sxg-location.html \
+  -certificate $certfile \
+  -certUrl $cert_url_origin/signed-exchange/resources/$certfile.cbor \
+  -validityUrl $inner_url_origin/signed-exchange/resources/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o ../appcache/resources/sxg/sxg-location.sxg \
+  -miRecordSize 100
+
+# A valid Signed Exchange for appcache test
+# - appcache and the sxg inner resp both provide the content for the url
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $inner_url_origin/signed-exchange/appcache/resources/appcached-url.html \
+  -status 200 \
+  -content ../appcache/resources/appcached-url-in-sxg.html \
+  -certificate $certfile \
+  -certUrl $cert_url_origin/signed-exchange/resources/$certfile.cbor \
+  -validityUrl $inner_url_origin/signed-exchange/resources/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o ../appcache/resources/sxg/sxg-appcached.sxg \
   -miRecordSize 100
 
 # A valid Signed Exchange. The origin of certUrl is the "alt" origin where NEL
@@ -355,8 +395,6 @@ gen-signedexchange \
   -miRecordSize 100 \
   -ignoreErrors true
 
-
-
 # Signed Exchange with payload integrity error.
 echo 'garbage' | cat sxg/sxg-location.sxg - >sxg/sxg-merkle-integrity-error.sxg
 
@@ -439,6 +477,67 @@ gen-signedexchange \
   -date 2018-04-01T00:00:00Z \
   -expire 168h \
   -o sxg/sxg-variants-mismatch.sxg \
+  -miRecordSize 100
+
+# A valid Signed Exchange that reports navigation timing.
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $inner_url_origin/signed-exchange/resources/inner-url.html \
+  -status 200 \
+  -content sxg-navigation-timing.html \
+  -certificate $certfile \
+  -certUrl $cert_url_origin/signed-exchange/resources/$certfile.cbor \
+  -validityUrl $inner_url_origin/signed-exchange/resources/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o sxg/sxg-navigation-timing.sxg \
+  -miRecordSize 100
+
+# A valid Signed Exchange for testing service worker registration.
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $wpt_test_origin/signed-exchange/resources/register-sw-from-sxg.html \
+  -status 200 \
+  -content register-sw.html \
+  -certificate $certfile \
+  -certUrl $cert_url_origin/signed-exchange/resources/$certfile.cbor \
+  -validityUrl $wpt_test_origin/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o sxg/register-sw-from-sxg.sxg \
+  -miRecordSize 100
+
+# An invalid Signed Exchange for testing service worker registration after
+# fallback.
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $wpt_test_origin/signed-exchange/resources/register-sw-after-fallback.html \
+  -status 200 \
+  -content sxg-location.html \
+  -certificate $certfile \
+  -certUrl $cert_url_origin/signed-exchange/resources/not_found_certfile.cbor \
+  -validityUrl $wpt_test_origin/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o sxg/register-sw-after-fallback.sxg \
+  -miRecordSize 100
+
+# A valid Signed Exchange using data URL for cert-url.
+gen-signedexchange \
+  -version $sxg_version \
+  -uri $inner_url_origin/signed-exchange/resources/inner-url.html \
+  -status 200 \
+  -content sxg-location.html \
+  -certificate $certfile \
+  -certUrl $data_cert_url \
+  -validityUrl $inner_url_origin/signed-exchange/resources/resource.validity.msg \
+  -privateKey $keyfile \
+  -date 2018-04-01T00:00:00Z \
+  -expire 168h \
+  -o sxg/sxg-data-cert-url.sxg \
   -miRecordSize 100
 
 rm -fr $tmpdir

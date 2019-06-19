@@ -1,13 +1,11 @@
-import os
+import pytest
 import sys
 from io import BytesIO
-
 from mock import Mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
+from manifest import manifest as wptmanifest
 from manifest.item import TestharnessTest
-from wptrunner import manifestexpected, wpttest
+from .. import manifestexpected, wpttest
 
 dir_ini_0 = """\
 prefs: [a:b]
@@ -44,6 +42,11 @@ test_2 = """\
   lsan-max-stack-depth: 42
 """
 
+test_fuzzy = """\
+[fuzzy.html]
+  fuzzy: fuzzy-ref.html:1;200
+"""
+
 
 testharness_test = """<script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>"""
@@ -59,10 +62,12 @@ def make_mock_manifest(*items):
             filename = dir_path + "/%i.html" % i
             tests.append((test_type,
                           filename,
-                          set([TestharnessTest("/foo.bar", filename, "/", filename)])))
+                          {TestharnessTest("/foo.bar", filename, "/", filename)}))
     return rv
 
 
+@pytest.mark.xfail(sys.version[0] == "3",
+                   reason="bytes/text confusion in py3")
 def test_metadata_inherit():
     tests = make_mock_manifest(("test", "a", 10), ("test", "a/b", 10),
                                ("test", "c", 10))
@@ -87,6 +92,8 @@ def test_metadata_inherit():
     assert test_obj.tags == {"a", "dir:a"}
 
 
+@pytest.mark.xfail(sys.version[0] == "3",
+                   reason="bytes/text confusion in py3")
 def test_conditional():
     tests = make_mock_manifest(("test", "a", 10), ("test", "a/b", 10),
                                ("test", "c", 10))
@@ -103,6 +110,8 @@ def test_conditional():
     assert test_obj.expected() == "FAIL"
 
 
+@pytest.mark.xfail(sys.version[0] == "3",
+                   reason="bytes/text confusion in py3")
 def test_metadata_lsan_stack_depth():
     tests = make_mock_manifest(("test", "a", 10), ("test", "a/b", 10))
 
@@ -139,3 +148,28 @@ def test_metadata_lsan_stack_depth():
     test_obj = wpttest.from_manifest(tests, test, inherit_metadata, test_metadata.get_test(test.id))
 
     assert test_obj.lsan_max_stack_depth == 42
+
+
+@pytest.mark.xfail(sys.version[0] == "3",
+                   reason="bytes/text confusion in py3")
+def test_metadata_fuzzy():
+    manifest_data = {
+        "items": {"reftest": {"a/fuzzy.html": [["a/fuzzy.html",
+                                                [["/a/fuzzy-ref.html", "=="]],
+                                                {"fuzzy": [[["/a/fuzzy.html", '/a/fuzzy-ref.html', '=='],
+                                                            [[2, 3], [10, 15]]]]}]]}},
+        "paths": {"a/fuzzy.html": ["0"*40, "reftest"]},
+        "version": 6,
+        "url_base": "/"}
+    manifest = wptmanifest.Manifest.from_json(".", manifest_data)
+    test_metadata = manifestexpected.static.compile(BytesIO(test_fuzzy),
+                                                    {},
+                                                    data_cls_getter=manifestexpected.data_cls_getter,
+                                                    test_path="a/fuzzy.html",
+                                                    url_base="/")
+
+    test = manifest.iterpath("a/fuzzy.html").next()
+    test_obj = wpttest.from_manifest(manifest, test, [], test_metadata.get_test(test.id))
+
+    assert test_obj.fuzzy == {('/a/fuzzy.html', '/a/fuzzy-ref.html', '=='): [[2, 3], [10, 15]]}
+    assert test_obj.fuzzy_override == {'/a/fuzzy-ref.html': ((1, 1), (200, 200))}
