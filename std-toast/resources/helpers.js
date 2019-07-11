@@ -1,4 +1,4 @@
-import { showToast, StdToastElement } from 'std:toast';
+import { showToast, StdToastElement } from 'std:elements/toast';
 
 // helper functions to keep tests from bleeding into each other
 
@@ -51,6 +51,12 @@ export const assertToastNotShown = (toast) => {
     assert_equals(window.getComputedStyle(toast).display, 'none');
     assert_false(toast.hasAttribute('open'));
     assert_false(toast.open);
+};
+
+export const assertActionButtonOnToast = (action, toast) => {
+    assert_equals(toast.action, action);
+    assert_equals(action.getAttribute('slot'), 'action');
+    assert_equals(action, toast.querySelector('button'));
 };
 
 export class EventCollector {

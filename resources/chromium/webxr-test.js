@@ -3,6 +3,19 @@
 // This polyfill library implements the WebXR Test API as specified here:
 // https://github.com/immersive-web/webxr-test-api
 
+
+let default_standing = new gfx.mojom.Transform();
+default_standing.matrix = [1, 0, 0, 0,
+                           0, 1, 0, 0,
+                           0, 0, 1, 0,
+                           0, 1.65, 0, 1];
+const default_stage_parameters = {
+  standingTransform: default_standing,
+  sizeX: 0,
+  sizeZ: 0,
+  bounds: null
+};
+
 class ChromeXRTest {
   constructor() {
     this.mockVRService_ = new MockVRService(mojo.frameInterfaces);
@@ -12,8 +25,9 @@ class ChromeXRTest {
     return Promise.resolve(this.mockVRService_.addRuntime(init_params));
   }
 
-  simulateDeviceDisconnection(device) {
-    this.mockVRService_.removeRuntime(device);
+  disconnectAllDevices() {
+    this.mockVRService_.removeAllRuntimes(device);
+    return Promise.resolve();
   }
 
   simulateUserActivation(callback) {
@@ -60,12 +74,23 @@ class MockVRService {
     return runtime;
   }
 
-  removeRuntime(runtime) {
-    // We have no way of distinguishing between devices, so just clear the
-    // entire list for now.
-    // TODO(http://crbug.com/873409) We also have no way right now to disconnect
-    // devices.
+  removeAllRuntimes() {
+    if (this.client_) {
+      this.client_.onDeviceChanged();
+    }
+
     this.runtimes_ = [];
+  }
+
+  removeRuntime(device) {
+    let index = this.runtimes_.indexOf(device);
+    if (index >= 0) {
+      this.runtimes_.splice(index, 1);
+      if (this.client_) {
+        console.error("Notifying client");
+        this.client_.onDeviceChanged();
+      }
+    }
   }
 
   // VRService implementation.
@@ -97,12 +122,22 @@ class MockVRService {
       // Find and return the first successful result.
       for (let i = 0; i < results.length; i++) {
         if (results[i].session) {
-          return results[i];
+          return {
+            result: {
+              session : results[i].session,
+              $tag :  0
+            }
+          };
         }
       }
 
       // If there were no successful results, returns a null session.
-      return {session: null};
+      return {
+        result: {
+          failureReason : device.mojom.RequestSessionResult.NO_RUNTIME_FOUND,
+          $tag :  1
+        }
+      };
     });
   }
 
@@ -136,11 +171,15 @@ class MockRuntime {
 
     this.pose_ = null;
     this.next_frame_id_ = 0;
+    this.bounds_ = null;
+    this.send_pose_reset_ = false;
 
     this.service_ = service;
 
     this.framesOfReference = {};
 
+    // Initialize DisplayInfo first to set the defaults, then override with
+    // anything from the deviceInit
     if (fakeDeviceInit.supportsImmersive) {
       this.displayInfo_ = this.getImmersiveDisplayInfo();
     } else {
@@ -150,16 +189,33 @@ class MockRuntime {
     if (fakeDeviceInit.supportsEnvironmentIntegration) {
       this.displayInfo_.capabilities.canProvideEnvironmentIntegration = true;
     }
-  }
 
-  // Test methods.
-  setXRPresentationFrameData(poseMatrix, views) {
-    if (poseMatrix == null) {
-      this.pose_ = null;
-    } else {
-      this.setPoseFromMatrix(poseMatrix);
+    if (fakeDeviceInit.viewerOrigin != null) {
+      this.setViewerOrigin(fakeDeviceInit.viewerOrigin);
     }
 
+    if (fakeDeviceInit.localToFloorLevelTransform != null) {
+      this.setLocalToFloorLevelTransform(fakeDeviceInit.localToFloorLevelTransform);
+    }
+
+    // This appropriately handles if the coordinates are null
+    this.setBoundsGeometry(fakeDeviceInit.boundsCoordinates);
+
+    this.setViews(fakeDeviceInit.views);
+  }
+
+  // Test API methods.
+  disconnect() {
+    this.service_.removeRuntime(this);
+    this.presentation_provider_.Close();
+    if (this.sessionClient_.ptr.isBound()) {
+      this.sessionClient_.ptr.reset();
+    }
+
+    return Promise.resolve();
+  }
+
+  setViews(views) {
     if (views) {
       let changed = false;
       for (let i = 0; i < views.length; i++) {
@@ -172,17 +228,18 @@ class MockRuntime {
         }
       }
 
-      if (changed) {
+      if (changed && this.sessionClient_.ptr.isBound()) {
         this.sessionClient_.onChanged(this.displayInfo_);
       }
     }
   }
 
-
-  setPoseFromMatrix(poseMatrix) {
+  setViewerOrigin(origin, emulatedPosition = false) {
+    let p = origin.position;
+    let q = origin.orientation;
     this.pose_ = {
-      orientation: null,
-      position: null,
+      orientation: { x: q[0], y: q[1], z: q[2], w: q[3] },
+      position: { x: p[0], y: p[1], z: p[2] },
       angularVelocity: null,
       linearVelocity: null,
       angularAcceleration: null,
@@ -190,37 +247,97 @@ class MockRuntime {
       inputState: null,
       poseIndex: 0
     };
+  }
 
-    let pose = this.poseFromMatrix(poseMatrix);
-    for (let field in pose) {
-      if (this.pose_.hasOwnProperty(field)) {
-        this.pose_[field] = pose[field];
+  clearViewerOrigin() {
+    this.pose_ = null;
+  }
+
+  simulateVisibilityChange(visibilityState) {
+    // TODO(https://crbug.com/982099): Chrome currently does not have a way for
+    // devices to bubble up any form of visibilityChange.
+  }
+
+  setBoundsGeometry(bounds) {
+    if (bounds == null) {
+      this.bounds_ = null;
+    } else if (bounds.length < 3) {
+      throw new Error("Bounds must have a length of at least 3");
+    } else {
+      this.bounds_ = bounds;
+    }
+
+    // We can only set bounds if we have stageParameters set; otherwise, we
+    // don't know the transform from local space to bounds space.
+    // We'll cache the bounds so that they can be set in the future if the
+    // floorLevel transform is set, but we won't update them just yet.
+    if (this.displayInfo_.stageParameters) {
+      this.displayInfo_.stageParameters.bounds = this.bounds_;
+
+      if (this.sessionClient_.ptr.isBound()) {
+        this.sessionClient_.onChanged(this.displayInfo_);
       }
     }
   }
 
-  poseFromMatrix(m) {
-    let orientation = [];
+  setLocalToFloorLevelTransform(transform) {
+    if (!this.displayInfo_.stageParameters) {
+      this.displayInfo_.stageParameters = default_stage_parameters;
+      this.displayInfo_.stageParameters.bounds = this.bounds_;
+    }
 
-    let m00 = m[0];
-    let m11 = m[5];
-    let m22 = m[10];
-    // The max( 0, ... ) is just a safeguard against rounding error.
-    orientation[3] = Math.sqrt(Math.max(0, 1 + m00 + m11 + m22)) / 2;
-    orientation[0] = Math.sqrt(Math.max(0, 1 + m00 - m11 - m22)) / 2;
-    orientation[1] = Math.sqrt(Math.max(0, 1 - m00 + m11 - m22)) / 2;
-    orientation[2] = Math.sqrt(Math.max(0, 1 - m00 - m11 + m22)) / 2;
+    this.displayInfo_.stageParameters.standingTransform = new gfx.mojom.Transform();
+    this.displayInfo_.stageParameters.standingTransform.matrix =
+      this.getMatrixFromTransform(transform);
 
-    let position = [];
-    position[0] = m[12];
-    position[1] = m[13];
-    position[2] = m[14];
-
-    return {
-      orientation, position
+    if (this.sessionClient_.ptr.isBound()) {
+      this.sessionClient_.onChanged(this.displayInfo_);
     }
   }
 
+  clearLocalToFloorLevelTransform() {
+    if (this.displayInfo_.stageParameters) {
+      this.displayInfo_.stageParameters = null;
+
+      if (this.sessionClient_.ptr.isBound()) {
+        this.sessionClient_.onChanged(this.displayInfo_);
+      }
+    }
+  }
+
+  simulateResetPose() {
+    this.send_pose_reset_ = true;
+  }
+
+  // Helper methods
+  getMatrixFromTransform(transform) {
+    let x = transform.orientation[0];
+    let y = transform.orientation[1];
+    let z = transform.orientation[2];
+    let w = transform.orientation[3];
+
+    let m11 = 1.0 - 2.0 * (y * y + z * z);
+    let m21 = 2.0 * (x * y + z * w);
+    let m31 = 2.0 * (x * z - y * w);
+
+    let m12 = 2.0 * (x * y - z * w);
+    let m22 = 1.0 - 2.0 * (x * x + z * z);
+    let m32 = 2.0 * (y * z + x * w);
+
+    let m13 = 2.0 * (x * z + y * w);
+    let m23 = 2.0 * (y * z - x * w);
+    let m33 = 1.0 - 2.0 * (x * x + y * y);
+
+    let m14 = transform.position[0];
+    let m24 = transform.position[1];
+    let m34 = transform.position[2];
+
+    // Column-major linearized order is expected.
+    return [m11, m21, m31, 0,
+            m12, m22, m32, 0,
+            m13, m23, m33, 0,
+            m14, m24, m34, 1];
+  }
   getNonImmersiveDisplayInfo() {
     let displayInfo = this.getImmersiveDisplayInfo();
 
@@ -249,7 +366,7 @@ class MockRuntime {
           leftDegrees: 50.899,
           rightDegrees: 35.197
         },
-        offset: [-0.032, 0, 0],
+        offset: { x: -0.032, y: 0, z: 0 },
         renderWidth: 20,
         renderHeight: 20
       },
@@ -260,7 +377,7 @@ class MockRuntime {
           leftDegrees: 50.899,
           rightDegrees: 35.197
         },
-        offset: [0.032, 0, 0],
+        offset: { x: 0.032, y: 0, z: 0 },
         renderWidth: 20,
         renderHeight: 20
       },
@@ -286,6 +403,8 @@ class MockRuntime {
     let upTan = (1 + m[9]) / m[5];
     let downTan = (1 - m[9]) / m[5];
 
+    let offset = fakeXRViewInit.viewOffset.position;
+
     return {
       fieldOfView: {
         upDegrees: toDegrees(upTan),
@@ -293,9 +412,9 @@ class MockRuntime {
         leftDegrees: toDegrees(leftTan),
         rightDegrees: toDegrees(rightTan)
       },
-      offset: [0, 0, 0],
-      renderWidth: 20,
-      renderHeight: 20
+      offset: { x: offset[0], y: offset[1], z: offset[2] },
+      renderWidth: fakeXRViewInit.resolution.width,
+      renderHeight: fakeXRViewInit.resolution.height
     };
   }
 
@@ -305,6 +424,8 @@ class MockRuntime {
   getFrameData() {
     if (this.pose_) {
       this.pose_.poseIndex++;
+      this.pose_.poseReset = this.send_pose_reset_;
+      this.send_pose_reset_ = false;
     }
 
     // Convert current document time to monotonic time.
@@ -320,7 +441,6 @@ class MockRuntime {
           microseconds: now,
         },
         frameId: this.next_frame_id_++,
-        projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         bufferHolder: null,
         bufferSize: {}
       }
@@ -396,6 +516,7 @@ class MockRuntime {
   };
 }
 
+// Mojo helper classes
 class MockXRPresentationProvider {
   constructor() {
     this.binding_ = new mojo.Binding(device.mojom.XRPresentationProvider, this);
@@ -437,6 +558,28 @@ class MockXRPresentationProvider {
     this.submitFrameClient_.onSubmitFrameTransferred(true);
     this.submitFrameClient_.onSubmitFrameRendered();
   }
+
+  // Utility methods
+  Close() {
+    this.binding_.close();
+  }
 }
 
+// This is a temporary workaround for the fact that spinning up webxr before
+// the mojo interceptors are created will cause the interceptors to not get
+// registered, so we have to create this before we query xr;
 let XRTest = new ChromeXRTest();
+
+// This test API is also used to run Chrome's internal legacy VR tests; however,
+// those fail if navigator.xr has been used. Those tests will set a bool telling
+// us not to try to check navigator.xr
+if ((typeof legacy_vr_test === 'undefined') || !legacy_vr_test) {
+  // Some tests may run in the http context where navigator.xr isn't exposed
+  // This should just be to test that it isn't exposed, but don't try to set up
+  // the test framework in this case.
+  if (navigator.xr) {
+    navigator.xr.test = XRTest;
+  }
+} else {
+  navigator.vr = { test: XRTest };
+}
