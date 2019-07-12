@@ -1,0 +1,13 @@
+<script>
+'use strict';
+
+/* `www1` because this will be put in cross origin iframes with domains[www], don't be same-origin to that! */
+fetch('https://{{domains[www1]}}:{{ports[https][0]}}/client-hints/echo_client_hints_received.py').then(r => {
+  if ( r.status === 200  && r.headers.has('dpr-received') ) {
+    parent.postMessage({ enabled: true }, '*')
+  } else {
+    parent.postMessage({ enabled: false }, '*');
+  }
+});
+
+</script>

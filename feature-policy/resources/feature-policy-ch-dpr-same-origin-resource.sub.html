@@ -1,0 +1,12 @@
+<script>
+'use strict';
+
+fetch("/client-hints/echo_client_hints_received.py").then(r => {
+  if ( r.status === 200  && r.headers.has( "dpr-received") ) {
+    parent.postMessage({ enabled: true }, '*')
+  } else {
+    parent.postMessage({ enabled: false }, '*');
+  }
+});
+
+</script>
